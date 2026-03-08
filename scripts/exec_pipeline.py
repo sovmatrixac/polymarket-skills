@@ -65,6 +65,7 @@ import argparse
 import json
 import os
 import sys
+import shutil
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
@@ -127,12 +128,24 @@ def _select_and_dedup_candidates(
     for item in items:
         token_no = item.get("token_no")
         token_yes = item.get("token_yes")
-        token_id = token_no or token_yes
-        if not token_id:
-            # 缺少 token 信息的条目无法交易，直接丢弃
+        yes_prob = item.get("yes_prob", 0.5)
+        best_ask_yes = item.get("best_ask")
+        best_bid_yes = item.get("best_bid")
+        # 选择胜率更高的一侧：yes胜率≥50%选yes，否则选no
+        if float(yes_prob) >= 0.5:
+            token_id = token_yes or token_no
+            # 买Yes侧用Yes的卖价
+            trade_price = best_ask_yes
+        else:
+            token_id = token_no or token_yes
+            # 买No侧用No的卖价 = 1 - Yes的买价
+            trade_price = 1.0 - float(best_bid_yes) if best_bid_yes is not None else None
+        if not token_id or trade_price is None:
+            # 缺少token信息或有效价格的条目无法交易，直接丢弃
             continue
         new_item = dict(item)
         new_item["token_id"] = token_id
+        new_item["trade_price"] = trade_price
         enriched.append(new_item)
 
     # 3) 基于当前持仓进行去重
@@ -179,13 +192,13 @@ def build_trades_plan(
         if len(trades) >= max_trades:
             break
 
-        price = item.get("best_ask")
+        price = item.get("trade_price")
         try:
             price_f = float(price)
         except (TypeError, ValueError):
             # 缺少有效报价时跳过该市场
             continue
-        if price_f <= 0:
+        if price_f <= 0 or price_f >= 1:
             continue
 
         sizing = compute_sizing(price=price_f, risk_fraction=risk_fraction)
@@ -265,6 +278,23 @@ def _main() -> int:
     except Exception as exc:
         print(f"exec_pipeline 失败: {exc}", file=sys.stderr)
         return 1
+
+    # 保存交易历史到history目录
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    skill_root = os.path.dirname(script_dir)
+    history_root = os.path.join(skill_root, "history")
+    os.makedirs(history_root, exist_ok=True)
+    
+    # 生成UTC时间戳文件夹名
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    history_dir = os.path.join(history_root, timestamp)
+    os.makedirs(history_dir, exist_ok=True)
+    
+    # 复制三个历史文件到时间戳目录
+    for filename in ["candidates.json", "deduped_candidates.json", "trades_plan.json"]:
+        src_path = os.path.join(skill_root, filename)
+        if os.path.exists(src_path):
+            shutil.copy(src_path, os.path.join(history_dir, filename))
 
     # 将计划回显到 stdout，便于上游日志记录
     print(json.dumps(plan, ensure_ascii=False, indent=2))

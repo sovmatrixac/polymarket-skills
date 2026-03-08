@@ -4,7 +4,9 @@
 此脚本复用 ``get_markets.py`` 中的 `list_active_markets`，从 Gamma
 ``/markets`` 接口获取**活跃且未关闭**的市场，并执行以下逻辑：
 
-1. 只保留 Yes 概率在给定区间内的市场（默认 [0.95, 0.99)）。
+1. 只保留两个高胜率区间的市场：
+   - 高Yes胜率：Yes概率默认在 [0.95, 0.99) 区间
+   - 高No胜率：Yes概率默认 ≤0.05（即No概率≥95%）
 2. 排除 endDate 缺失、格式异常或已过期的市场。
 3. 计算简单的评分 score，用于后续排序：
 
@@ -73,16 +75,22 @@ def _parse_args() -> argparse.Namespace:
         help="从 Gamma API 获取的市场数量上限（默认 500，用于 list_active_markets）。",
     )
     parser.add_argument(
-        "--min-yes",
+        "--min-high-yes",
         type=float,
         default=0.95,
-        help="Yes 概率下限（含，默认 0.95）。",
+        help="高Yes胜率区间下限（含，默认 0.95，即Yes胜率≥95%）。",
     )
     parser.add_argument(
-        "--max-yes",
+        "--max-high-yes",
         type=float,
         default=0.99,
-        help="Yes 概率上限（不含，默认 0.99）。",
+        help="高Yes胜率区间上限（不含，默认 0.99，即Yes胜率<99%）。",
+    )
+    parser.add_argument(
+        "--max-low-yes",
+        type=float,
+        default=0.05,
+        help="高No胜率区间上限（含，默认 0.05，即Yes概率≤5%，对应No胜率≥95%）。",
     )
     parser.add_argument(
         "--min-liquidity",
@@ -192,7 +200,8 @@ def _compute_score(market: MarketView, now: datetime) -> Optional[float]:
     if days_remaining <= 0:
         return None
 
-    expected_return = max(0.0, 1.0 - float(yes_prob))
+    # 无论高Yes胜率还是高No胜率，预期收益都是低概率侧的价值
+    expected_return = max(0.0, min(float(yes_prob), 1.0 - float(yes_prob)))
     if expected_return <= 0:
         return None
 
@@ -206,8 +215,9 @@ def _compute_score(market: MarketView, now: datetime) -> Optional[float]:
 def select_markets(
     *,
     limit: int = 500,
-    min_yes: float = 0.95,
-    max_yes: float = 0.99,
+    min_high_yes: float = 0.95,
+    max_high_yes: float = 0.99,
+    max_low_yes: float = 0.05,
     min_liquidity: float = 0.0,
     top_n: int = 50,
 ) -> List[Dict[str, Any]]:
@@ -231,11 +241,13 @@ def select_markets(
     results: List[Dict[str, Any]] = []
 
     for m in markets:
-        # 1) 基于 Yes 概率初筛
+        # 1) 基于 Yes 概率初筛：覆盖两个高胜率区间
+        # - 高Yes胜率：yes ≥ 95% 且 <99%
+        # - 高No胜率：yes ≤ 5%（即No胜率≥95%）
         yes = m.yes_prob
         if not isinstance(yes, (int, float)) or math.isnan(yes):
             continue
-        if yes < min_yes or yes >= max_yes:
+        if not ( (yes >= min_high_yes and yes < max_high_yes) or (yes <= max_low_yes) ):
             continue
 
         # 2) 流动性过滤
@@ -254,6 +266,7 @@ def select_markets(
             "token_no": m.token_no,
             "yes_prob": float(yes),
             "best_ask": float(m.best_ask) if isinstance(m.best_ask, (int, float)) else None,
+            "best_bid": float(m.best_bid) if isinstance(m.best_bid, (int, float)) else None,
             "endDate": m.end_date,
             "liquidity": float(liq),
             "volume": float(m.volume) if isinstance(m.volume, (int, float)) else 0.0,
@@ -276,8 +289,9 @@ def _main() -> int:
     try:
         candidates = select_markets(
             limit=args.limit,
-            min_yes=args.min_yes,
-            max_yes=args.max_yes,
+            min_high_yes=args.min_high_yes,
+            max_high_yes=args.max_high_yes,
+            max_low_yes=args.max_low_yes,
             min_liquidity=args.min_liquidity,
             top_n=args.top_n,
         )
@@ -288,8 +302,9 @@ def _main() -> int:
 
     output_data = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "min_yes": args.min_yes,
-        "max_yes": args.max_yes,
+        "min_high_yes": args.min_high_yes,
+        "max_high_yes": args.max_high_yes,
+        "max_low_yes": args.max_low_yes,
         "min_liquidity": args.min_liquidity,
         "count": len(candidates),
         "items": candidates,
