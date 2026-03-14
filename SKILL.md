@@ -9,11 +9,6 @@ description: 一个为 Openclaw 机器人设计的自动化交易 Skill，专注
 
 核心原则是“稳定盈利、严控风险”，通过筛选高概率市场、合理分配资金、并在交易前进行多重验证来寻找并执行交易机会。
 
-## 快速使用
-直接执行根目录下的 `./run.sh` 脚本即可自动完成「自动止盈→筛选标的→去重→生成交易计划→执行交易→钉钉通知」全流程：
-```bash
-cd /Users/xuji/.openclaw/workspace/skills/openclaw-polymarket-skill && ./run.sh
-```
 
 ## 1. 凭证与环境配置
 
