@@ -68,6 +68,11 @@ import json
 import os
 import sys
 from typing import Any, Dict, List
+from dotenv import load_dotenv
+
+# 优先加载脚本所在目录上级（技能根目录）的.env文件，自动覆盖现有环境变量
+dotenv_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+load_dotenv(dotenv_path=dotenv_path, override=True)
 
 from positions import (  # type: ignore[import]
     InvalidAddressError,
@@ -97,6 +102,14 @@ def _parse_args() -> argparse.Namespace:
         default="",
         help=(
             "资金地址（钱包地址）。未指定时，自动从环境变量 FUNDER_ADDRESS 读取。"
+        ),
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="",
+        help=(
+            "去重后结果输出文件路径。如果不指定，则将filtered列表输出到 stdout。"
         ),
     )
     return parser.parse_args()
@@ -233,7 +246,13 @@ def _main() -> int:
         print(f"deduplicate 失败: {exc}", file=sys.stderr)
         return 1
 
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if args.output:
+        # 输出到指定文件，只写filtered列表
+        with open(args.output, "w", encoding="utf-8") as f:
+            json.dump(result["filtered"], f, ensure_ascii=False, indent=2)
+    else:
+        # 输出到stdout，输出完整结果
+        print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
 

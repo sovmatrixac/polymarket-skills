@@ -9,6 +9,12 @@ description: 一个为 Openclaw 机器人设计的自动化交易 Skill，专注
 
 核心原则是“稳定盈利、严控风险”，通过筛选高概率市场、合理分配资金、并在交易前进行多重验证来寻找并执行交易机会。
 
+## 快速使用
+直接执行根目录下的 `./run.sh` 脚本即可自动完成「自动止盈→筛选标的→去重→生成交易计划→执行交易→钉钉通知」全流程：
+```bash
+cd /Users/xuji/.openclaw/workspace/skills/openclaw-polymarket-skill && ./run.sh
+```
+
 ## 1. 凭证与环境配置
 
 **必须**: 在执行任何交易脚本前，确保工作区存在 `.env` 文件，并包含以下变量：
@@ -20,11 +26,19 @@ description: 一个为 Openclaw 机器人设计的自动化交易 Skill，专注
 - `POLY_BUILDER_PASSPHRASE`: Builder API Passphrase
 - `DINGTALK_WEBHOOK_URL`: (可选) 钉钉机器人 Webhook 地址，用于接收通知
 
-**必须**: 调用任何与交易、余额、持仓相关的脚本时，在 `bash` 工具中设置 `include_secrets=true`，以确保脚本能访问到 `.env` 文件中的私密信息。
+**必须**: 调用任何与交易、余额、持仓相关的脚本时，**必须优先加载技能根目录下的 `./.env` 文件**，禁止加载全局路径 `~/.openclaw/.env`；或者显式传入所需的环境变量（PRIVATE_KEY、FUNDER_ADDRESS、POLY_BUILDER_API_KEY、POLY_BUILDER_SECRET、POLY_BUILDER_PASSPHRASE、DINGTALK_WEBHOOK_URL），确保脚本可以访问到所有必要的凭证信息。
 
 ## 2. 核心执行流程（SOP）
 
 Agent 必须严格按照以下步骤顺序执行，不得跳过或颠倒。
+
+### Step 0: 自动止盈（优先执行）
+- **动作**: 执行 `python3.12 scripts/take_profit.py` 脚本自动检查所有持仓。
+- **规则**: 
+  1. 当持仓收益达到理论最大收益的60%以上时触发止盈
+  2. 优先卖出剩余到期时间更长的标的，提前收回资金用于其他投资
+  3. 止盈成功后自动发送钉钉通知，包含每笔止盈的收益明细
+- **目标**: 及时落袋为安，提高资金利用率
 
 ### Step 1: 筛选高胜率候选市场
 

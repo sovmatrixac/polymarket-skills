@@ -24,8 +24,9 @@ from py_clob_client.clob_types import OrderArgs
 from py_clob_client.order_builder.constants import BUY, SELL
 from py_builder_signing_sdk.config import BuilderConfig, BuilderApiKeyCreds
 
-
-load_dotenv()  # 用于加载 .env 文件
+# 优先加载脚本所在目录上级（技能根目录）的.env文件，自动覆盖现有环境变量
+dotenv_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+load_dotenv(dotenv_path=dotenv_path, override=True)
 
 
 def parse_args() -> argparse.Namespace:

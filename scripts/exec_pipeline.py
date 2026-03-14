@@ -68,6 +68,11 @@ import sys
 import shutil
 from datetime import datetime, timezone
 from typing import Any, Dict, List
+from dotenv import load_dotenv
+
+# 优先加载脚本所在目录上级（技能根目录）的.env文件，自动覆盖现有环境变量
+dotenv_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+load_dotenv(dotenv_path=dotenv_path, override=True)
 
 from deduplicate import deduplicate_by_positions  # type: ignore[import]
 from risk_sizing import compute_sizing  # type: ignore[import]
