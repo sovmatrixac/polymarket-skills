@@ -116,9 +116,9 @@ def compute_sizing(price: float, risk_fraction: float = 0.05) -> Dict[str, Any]:
           "funder": "0x...",
           "balance_usdc": 123.45,
           "risk_fraction": 0.05,
-          "max_per_trade": 6.1725,
+          "max_per_trade": 5.0,
           "price": 0.97,
-          "max_shares": 6
+          "max_shares": 5
         }
     """
 
@@ -132,15 +132,20 @@ def compute_sizing(price: float, risk_fraction: float = 0.05) -> Dict[str, Any]:
     balance_usdc = _parse_usdc_balance(data.get("balance"))
     funder = data.get("funder")
 
-    max_per_trade = (balance_usdc * Decimal(str(risk_fraction))).quantize(Decimal("0.0000001"))
+    # 固定单笔交易最多10美元，不按余额比例计算
+    max_per_trade = Decimal("10.0")
+    # 确保账户余额足够支付该笔交易
+    if max_per_trade > balance_usdc:
+        max_per_trade = balance_usdc
 
-    # 计算可买入份数，使用 floor，若在风险限制下不足 1 份，则返回 0
+    # 计算可买入份数，使用 floor，若不足5份则返回0（平台要求最低5份）
     price_dec = Decimal(str(price))
     if price_dec <= 0:
         max_shares = 0
     else:
         max_shares = int(max_per_trade // price_dec)
-        if max_shares < 0:
+        if max_shares < 5:
+            # 低于平台最低5份要求，无法交易
             max_shares = 0
 
     return {
