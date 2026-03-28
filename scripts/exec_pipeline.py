@@ -13,8 +13,8 @@ Agent 在完成 web_search 验证后再调用 ``trade.py`` 执行。
 3. 对剩余候选按 score 由高到低排序，截取至多 N 条（默认 5 条）；
 4. 针对每个候选，调用 ``risk_sizing.compute_sizing`` 计算单笔最大
    资金与份数；
-5. 生成包含 token_id（优先使用 token_no）、price、shares 等字段的
-   交易计划，并写入 JSON 文件 ``trades_plan.json``。
+5. 先确定本轮交易方向（默认随机在 Yes/No 高胜率机会中二选一），再为每个候选
+   选择对应方向的 outcome token_id 与估算成交价，最终写入 ``trades_plan.json``。
 
 用法示例（在 Skill 根目录下）：
 
@@ -64,10 +64,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sys
+import random
 import shutil
+import sys
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 from dotenv import load_dotenv
 
 # 优先加载脚本所在目录上级（技能根目录）的.env文件，自动覆盖现有环境变量
@@ -103,6 +104,17 @@ def _parse_args() -> argparse.Namespace:
         help="单笔资金上限占总余额比例（默认 0.05，即 5%%）。",
     )
     parser.add_argument(
+        "--direction",
+        type=str,
+        choices=("random", "yes", "no"),
+        default="random",
+        help=(
+            "本轮交易方向：random 表示随机选择 yes/no 高胜率机会；"
+            "yes 表示只交易高 Yes 胜率（95%%~99%%）侧；"
+            "no 表示只交易高 No 胜率（95%%~99%%）侧。"
+        ),
+    )
+    parser.add_argument(
         "--min-score",
         type=float,
         default=0.0,
@@ -121,34 +133,72 @@ def _select_and_dedup_candidates(
     funder: str,
     max_trades: int,
     min_score: float,
-) -> List[Dict[str, Any]]:
-    """拉取候选市场并结合当前持仓进行去重，返回待进一步 sizing 的候选列表。"""
+    direction: str,
+) -> Tuple[str, List[Dict[str, Any]]]:
+    """拉取候选市场并结合当前持仓进行去重，返回 (本轮方向, 候选列表)。
+
+    - direction 支持：random/yes/no
+    - 若为 random，则会在“存在候选的一侧”中随机选择 yes 或 no。
+    - 为确保 token_id 不买错：
+      - YES 方向只使用 token_yes
+      - NO 方向只使用 token_no（不允许 fallback 到 token_yes）
+    """
 
     # 1) 获取按 score 排序的候选市场（数量适当放大，方便管道后续过滤）
     raw_candidates_wrapper = select_markets(top_n=max_trades * 10 or 50)
     items = list(raw_candidates_wrapper)
 
-    # 2) 为去重逻辑补充 token_id 字段（优先使用 token_no）
-    enriched: List[Dict[str, Any]] = []
+    direction_norm = (direction or "random").strip().lower()
+
+    yes_bucket: List[Dict[str, Any]] = []
+    no_bucket: List[Dict[str, Any]] = []
     for item in items:
+        try:
+            yes_prob = float(item.get("yes_prob", 0.5))
+        except (TypeError, ValueError):
+            continue
+        if yes_prob >= 0.5:
+            yes_bucket.append(item)
+        else:
+            no_bucket.append(item)
+
+    if direction_norm == "random":
+        available: List[str] = []
+        if yes_bucket:
+            available.append("yes")
+        if no_bucket:
+            available.append("no")
+        chosen_direction = random.choice(available) if available else "yes"
+    elif direction_norm in ("yes", "no"):
+        chosen_direction = direction_norm
+    else:
+        raise ValueError(f"未知 direction: {direction!r}，仅支持 random/yes/no")
+
+    selected_items = yes_bucket if chosen_direction == "yes" else no_bucket
+
+    # 2) 为去重逻辑补充 token_id 与 trade_price（严格按方向取 token）
+    enriched: List[Dict[str, Any]] = []
+    for item in selected_items:
         token_no = item.get("token_no")
         token_yes = item.get("token_yes")
-        yes_prob = item.get("yes_prob", 0.5)
         best_ask_yes = item.get("best_ask")
         best_bid_yes = item.get("best_bid")
-        # 选择胜率更高的一侧：yes胜率≥50%选yes，否则选no
-        if float(yes_prob) >= 0.5:
-            token_id = token_yes or token_no
-            # 买Yes侧用Yes的卖价
+
+        if chosen_direction == "yes":
+            token_id = token_yes
+            # 买 Yes 侧用 Yes 的卖价
             trade_price = best_ask_yes
         else:
-            token_id = token_no or token_yes
-            # 买No侧用No的卖价 = 1 - Yes的买价
+            token_id = token_no
+            # 买 No 侧用 No 的卖价 = 1 - Yes 的买价
             trade_price = 1.0 - float(best_bid_yes) if best_bid_yes is not None else None
+
         if not token_id or trade_price is None:
-            # 缺少token信息或有效价格的条目无法交易，直接丢弃
+            # 缺少对应方向 token 或有效价格的条目无法交易，直接丢弃
             continue
+
         new_item = dict(item)
+        new_item["direction"] = chosen_direction.upper()
         new_item["token_id"] = token_id
         new_item["trade_price"] = trade_price
         enriched.append(new_item)
@@ -172,7 +222,7 @@ def _select_and_dedup_candidates(
     if max_trades > 0 and len(filtered) > max_trades * 2:
         filtered = filtered[: max_trades * 2]
 
-    return filtered
+    return chosen_direction, filtered
 
 
 def build_trades_plan(
@@ -181,14 +231,16 @@ def build_trades_plan(
     risk_fraction: float,
     max_trades: int,
     min_score: float,
+    direction: str,
     output_path: str,
 ) -> Dict[str, Any]:
     """生成交易计划并写入 JSON 文件，返回计划内容。"""
 
-    candidates = _select_and_dedup_candidates(
+    chosen_direction, candidates = _select_and_dedup_candidates(
         funder=funder,
         max_trades=max_trades,
         min_score=min_score,
+        direction=direction,
     )
 
     trades: List[Dict[str, Any]] = []
@@ -221,6 +273,7 @@ def build_trades_plan(
         trade_entry: Dict[str, Any] = {
             "market_title": item.get("title"),
             "token_id": token_id,
+            "direction": item.get("direction"),
             # trade.py 中示例为 "看好 Yes 时 Sell No"，但底层侧别由 trade.py 决定，
             # 这里统一使用 BUY 以与脚本内部默认保持一致。
             "side": "BUY",
@@ -238,6 +291,7 @@ def build_trades_plan(
         "funder": funder,
         "risk_fraction": float(risk_fraction),
         "max_trades": int(max_trades),
+        "direction": chosen_direction,
         "currency": "USDC",
         "min_score": float(min_score),
         "trades": trades,
@@ -278,6 +332,7 @@ def _main() -> int:
             risk_fraction=args.risk_fraction,
             max_trades=args.max_trades,
             min_score=args.min_score,
+            direction=args.direction,
             output_path=args.output,
         )
     except Exception as exc:

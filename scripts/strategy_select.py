@@ -78,19 +78,29 @@ def _parse_args() -> argparse.Namespace:
         "--min-high-yes",
         type=float,
         default=0.95,
-        help="高Yes胜率区间下限（含，默认 0.95，即Yes胜率≥95%）。",
+        help="高Yes胜率区间下限（含，默认 0.95，即Yes胜率≥95%%）。",
     )
     parser.add_argument(
         "--max-high-yes",
         type=float,
         default=0.99,
-        help="高Yes胜率区间上限（不含，默认 0.99，即Yes胜率<99%）。",
+        help="高Yes胜率区间上限（不含，默认 0.99，即Yes胜率<99%%）。",
     )
     parser.add_argument(
         "--max-low-yes",
         type=float,
         default=0.05,
-        help="高No胜率区间上限（含，默认 0.05，即Yes概率≤5%，对应No胜率≥95%）。",
+        help="高No胜率区间上限（含，默认 0.05，即Yes概率≤5%%，对应No胜率≥95%%）。",
+    )
+    parser.add_argument(
+        "--min-low-yes",
+        type=float,
+        default=None,
+        help=(
+            "高No胜率区间下限（不含）。默认会根据 max-high-yes 自动推导为 "
+            "(1 - max-high-yes)，例如 max-high-yes=0.99 时默认 min-low-yes=0.01，"
+            "用于避免交易 No 概率≥99%% 的市场。"
+        ),
     )
     parser.add_argument(
         "--min-liquidity",
@@ -218,6 +228,7 @@ def select_markets(
     min_high_yes: float = 0.95,
     max_high_yes: float = 0.99,
     max_low_yes: float = 0.05,
+    min_low_yes: Optional[float] = None,
     min_liquidity: float = 0.0,
     top_n: int = 50,
 ) -> List[Dict[str, Any]]:
@@ -231,6 +242,10 @@ def select_markets(
     if top_n <= 0:
         top_n = 50
 
+    if min_low_yes is None:
+        # 与 max_high_yes 对称：避免交易 No 概率≥max_high_yes（例如 99%）
+        min_low_yes = max(0.0, 1.0 - float(max_high_yes))
+
     now = datetime.now(timezone.utc)
 
     try:
@@ -242,12 +257,15 @@ def select_markets(
 
     for m in markets:
         # 1) 基于 Yes 概率初筛：覆盖两个高胜率区间
-        # - 高Yes胜率：yes ≥ 95% 且 <99%
-        # - 高No胜率：yes ≤ 5%（即No胜率≥95%）
+        # - 高Yes胜率：yes ≥ min_high_yes 且 < max_high_yes
+        # - 高No胜率：min_low_yes < yes ≤ max_low_yes（等价 No 胜率在 [1-max_low_yes, 1-min_low_yes)）
         yes = m.yes_prob
         if not isinstance(yes, (int, float)) or math.isnan(yes):
             continue
-        if not ( (yes >= min_high_yes and yes < max_high_yes) or (yes <= max_low_yes) ):
+
+        is_high_yes = yes >= min_high_yes and yes < max_high_yes
+        is_high_no = yes <= max_low_yes and yes > float(min_low_yes)
+        if not (is_high_yes or is_high_no):
             continue
 
         # 2) 流动性过滤
@@ -287,11 +305,16 @@ def _main() -> int:
     args = _parse_args()
 
     try:
+        min_low_yes = args.min_low_yes
+        if min_low_yes is None:
+            min_low_yes = max(0.0, 1.0 - float(args.max_high_yes))
+
         candidates = select_markets(
             limit=args.limit,
             min_high_yes=args.min_high_yes,
             max_high_yes=args.max_high_yes,
             max_low_yes=args.max_low_yes,
+            min_low_yes=min_low_yes,
             min_liquidity=args.min_liquidity,
             top_n=args.top_n,
         )
@@ -305,6 +328,7 @@ def _main() -> int:
         "min_high_yes": args.min_high_yes,
         "max_high_yes": args.max_high_yes,
         "max_low_yes": args.max_low_yes,
+        "min_low_yes": min_low_yes,
         "min_liquidity": args.min_liquidity,
         "count": len(candidates),
         "items": candidates,
