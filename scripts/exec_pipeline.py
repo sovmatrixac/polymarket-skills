@@ -13,18 +13,18 @@ Agent 在完成 web_search 验证后再调用 ``trade.py`` 执行。
 3. 对剩余候选按 score 由高到低排序，截取至多 N 条（默认 5 条）；
 4. 针对每个候选，调用 ``risk_sizing.compute_sizing`` 计算单笔最大
    资金与份数；
-5. 先确定本轮交易方向（默认随机在 Yes/No 高胜率机会中二选一），再为每个候选
-   选择对应方向的 outcome token_id 与估算成交价，最终写入 ``trades_plan.json``。
+5. 先确定本轮交易方向（Yes 或 No），再为每个候选选择对应方向的 outcome token_id
+   与估算成交价，最终写入 ``trades_plan.json``。
 
 用法示例（在 Skill 根目录下）：
 
 .. code-block:: bash
 
     # 生成默认交易计划（最多 5 笔，每笔 5% 资金）
-    python3 scripts/exec_pipeline.py
+    python3 scripts/exec_pipeline.py --direction yes
 
     # 调整最大交易笔数与风险系数
-    python3 scripts/exec_pipeline.py --max-trades 3 --risk-fraction 0.03
+    python3 scripts/exec_pipeline.py --direction no --max-trades 3 --risk-fraction 0.03
 
 生成的 trades_plan.json 结构示例：
 
@@ -64,7 +64,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import random
 import shutil
 import sys
 from datetime import datetime, timezone
@@ -106,11 +105,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--direction",
         type=str,
-        choices=("random", "yes", "no"),
-        default="random",
+        required=True,
+        choices=("yes", "no"),
         help=(
-            "本轮交易方向：random 表示随机选择 yes/no 高胜率机会；"
-            "yes 表示只交易高 Yes 胜率（95%%~99%%）侧；"
+            "本轮交易方向：yes 表示只交易高 Yes 胜率（95%%~99%%）侧；"
             "no 表示只交易高 No 胜率（95%%~99%%）侧。"
         ),
     )
@@ -137,48 +135,25 @@ def _select_and_dedup_candidates(
 ) -> Tuple[str, List[Dict[str, Any]]]:
     """拉取候选市场并结合当前持仓进行去重，返回 (本轮方向, 候选列表)。
 
-    - direction 支持：random/yes/no
-    - 若为 random，则会在“存在候选的一侧”中随机选择 yes 或 no。
+    - direction 支持：yes/no
+    - 本脚本不负责随机选向；direction 由上层 Agent 在流程开始时确定。
     - 为确保 token_id 不买错：
       - YES 方向只使用 token_yes
       - NO 方向只使用 token_no（不允许 fallback 到 token_yes）
     """
 
-    # 1) 获取按 score 排序的候选市场（数量适当放大，方便管道后续过滤）
-    raw_candidates_wrapper = select_markets(top_n=max_trades * 10 or 50)
-    items = list(raw_candidates_wrapper)
+    direction_norm = (direction or "").strip().lower()
+    if direction_norm not in ("yes", "no"):
+        raise ValueError(f"未知 direction: {direction!r}，仅支持 yes/no")
 
-    direction_norm = (direction or "random").strip().lower()
+    chosen_direction = direction_norm
 
-    yes_bucket: List[Dict[str, Any]] = []
-    no_bucket: List[Dict[str, Any]] = []
-    for item in items:
-        try:
-            yes_prob = float(item.get("yes_prob", 0.5))
-        except (TypeError, ValueError):
-            continue
-        if yes_prob >= 0.5:
-            yes_bucket.append(item)
-        else:
-            no_bucket.append(item)
-
-    if direction_norm == "random":
-        available: List[str] = []
-        if yes_bucket:
-            available.append("yes")
-        if no_bucket:
-            available.append("no")
-        chosen_direction = random.choice(available) if available else "yes"
-    elif direction_norm in ("yes", "no"):
-        chosen_direction = direction_norm
-    else:
-        raise ValueError(f"未知 direction: {direction!r}，仅支持 random/yes/no")
-
-    selected_items = yes_bucket if chosen_direction == "yes" else no_bucket
+    # 1) 先按方向拉取候选（避免混用 Yes/No）
+    items = list(select_markets(top_n=max_trades * 10 or 50, direction=chosen_direction))
 
     # 2) 为去重逻辑补充 token_id 与 trade_price（严格按方向取 token）
     enriched: List[Dict[str, Any]] = []
-    for item in selected_items:
+    for item in items:
         token_no = item.get("token_no")
         token_yes = item.get("token_yes")
         best_ask_yes = item.get("best_ask")

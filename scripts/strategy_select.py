@@ -33,14 +33,14 @@
 
 .. code-block:: bash
 
-    # 按默认区间筛选，并打印前 50 条按 score 排序的候选市场
-    python3 scripts/strategy_select.py --top-n 50
+    # 按默认区间筛选，并打印前 50 条按 score 排序的候选市场（Yes 方向）
+    python3 scripts/strategy_select.py --direction yes --top-n 50
 
     # 调整 Yes 概率区间
-    python3 scripts/strategy_select.py --min-yes 0.96 --max-yes 0.985 --top-n 20
+    python3 scripts/strategy_select.py --direction yes --min-high-yes 0.96 --max-high-yes 0.985 --top-n 20
 
-    # 将结果写入文件
-    python3 scripts/strategy_select.py --top-n 50 --output strategy_candidates.json
+    # 将结果写入文件（No 方向）
+    python3 scripts/strategy_select.py --direction no --top-n 50 --output strategy_candidates.json
 
 该脚本只做离线筛选和排序，不执行任何交易。
 """
@@ -101,6 +101,13 @@ def _parse_args() -> argparse.Namespace:
             "(1 - max-high-yes)，例如 max-high-yes=0.99 时默认 min-low-yes=0.01，"
             "用于避免交易 No 概率≥99%% 的市场。"
         ),
+    )
+    parser.add_argument(
+        "--direction",
+        type=str,
+        required=True,
+        choices=("yes", "no"),
+        help="交易方向：yes 表示只筛选高 Yes 胜率（95%%~99%%）；no 表示只筛选高 No 胜率（95%%~99%%）。",
     )
     parser.add_argument(
         "--min-liquidity",
@@ -229,6 +236,7 @@ def select_markets(
     max_high_yes: float = 0.99,
     max_low_yes: float = 0.05,
     min_low_yes: Optional[float] = None,
+    direction: str = "yes",
     min_liquidity: float = 0.0,
     top_n: int = 50,
 ) -> List[Dict[str, Any]]:
@@ -241,6 +249,10 @@ def select_markets(
         limit = 500
     if top_n <= 0:
         top_n = 50
+
+    direction_norm = (direction or "yes").strip().lower()
+    if direction_norm not in {"yes", "no"}:
+        raise ValueError(f"direction 仅支持 yes/no，当前为: {direction!r}")
 
     if min_low_yes is None:
         # 与 max_high_yes 对称：避免交易 No 概率≥max_high_yes（例如 99%）
@@ -265,8 +277,15 @@ def select_markets(
 
         is_high_yes = yes >= min_high_yes and yes < max_high_yes
         is_high_no = yes <= max_low_yes and yes > float(min_low_yes)
-        if not (is_high_yes or is_high_no):
-            continue
+
+        if direction_norm == "yes":
+            if not is_high_yes:
+                continue
+            market_direction = "YES"
+        else:  # direction_norm == "no"
+            if not is_high_no:
+                continue
+            market_direction = "NO"
 
         # 2) 流动性过滤
         liq = m.liquidity if isinstance(m.liquidity, (int, float)) else 0.0
@@ -280,6 +299,7 @@ def select_markets(
 
         item: Dict[str, Any] = {
             "title": m.display_title,
+            "direction": market_direction,
             "token_yes": m.token_yes,
             "token_no": m.token_no,
             "yes_prob": float(yes),
@@ -309,12 +329,14 @@ def _main() -> int:
         if min_low_yes is None:
             min_low_yes = max(0.0, 1.0 - float(args.max_high_yes))
 
+        chosen_direction = args.direction
         candidates = select_markets(
             limit=args.limit,
             min_high_yes=args.min_high_yes,
             max_high_yes=args.max_high_yes,
             max_low_yes=args.max_low_yes,
             min_low_yes=min_low_yes,
+            direction=chosen_direction,
             min_liquidity=args.min_liquidity,
             top_n=args.top_n,
         )
@@ -325,6 +347,7 @@ def _main() -> int:
 
     output_data = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "direction": chosen_direction,
         "min_high_yes": args.min_high_yes,
         "max_high_yes": args.max_high_yes,
         "max_low_yes": args.max_low_yes,

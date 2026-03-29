@@ -35,10 +35,10 @@ Agent 必须严格按照以下步骤顺序执行，不得跳过或颠倒。
   3. 止盈成功后自动发送钉钉通知，包含每笔止盈的收益明细
 - **目标**: 及时落袋为安，提高资金利用率
 
-### Step 1: 筛选高胜率候选市场
+### Step 1: 选择方向并筛选高胜率候选市场
 
-- **动作**: 调用 strategy_select 脚本生成 candidates.json（具体命令见“脚本使用说明”）。
-- **目标**: 获取所有活跃市场，筛选出两类高胜率且尚未过期的候选市场：
+- **动作**: 在本轮开始先确定交易方向 `direction`（`yes` / `no`），然后调用 strategy_select 脚本并传入该参数生成 candidates.json（具体命令见“脚本使用说明”）。
+- **目标**: 获取所有活跃市场，按 direction 只筛选出一类高胜率且尚未过期的候选市场：
   - **Yes 方向**：`Yes` 概率在 `[0.95, 0.99)`
   - **No 方向**：`No` 概率在 `[0.95, 0.99)`（等价 `Yes` 概率在 `(0.01, 0.05]`）
   并基于 `预期收益/剩余时间` 等维度进行评分排序。
@@ -53,8 +53,8 @@ Agent 必须严格按照以下步骤顺序执行，不得跳过或颠倒。
 
 ### Step 3: 生成交易计划
 
-- **动作**: 调用 exec_pipeline 脚本生成 trades_plan.json（命令见“脚本使用说明”）。该脚本会使用上一步的 `deduped_candidates.json`（如果存在）或直接调用内部的策略筛选与去重逻辑。
-- **目标**: 结合风险控制参数（单笔资金比例、最大交易笔数），为最终候选交易计算具体的投入份数（shares），并生成一份**离线**交易计划；同时在本轮内随机选择交易方向（Yes/No 高胜率机会二选一），并在 trade plan 中严格使用对应方向的 token id（No 方向必须使用 No token）。
+- **动作**: 调用 exec_pipeline 脚本生成 trades_plan.json（命令见“脚本使用说明”），并传入 Step 1 确定的 direction。
+- **目标**: 结合风险控制参数（单笔资金比例、最大交易笔数），为最终候选交易计算具体的投入份数（shares），并生成一份**离线**交易计划；同时在 trade plan 中严格使用对应方向的 token id（No 方向必须使用 No token）。
 - **产出**: `trades_plan.json` 文件。这份文件**仅为计划**，不代表已执行。
 
 ### Step 4: 人工或二次验证 (Web Search)
@@ -94,7 +94,7 @@ Agent 必须严格按照以下步骤顺序执行，不得跳过或颠倒。
 
 - **scripts/strategy_select.py**
   - **用途**: 对活跃市场进行筛选、评分和排序，选出符合高胜率策略的候选市场。
-  - **调用**: python3 scripts/strategy_select.py --output candidates.json
+  - **调用**: python3 scripts/strategy_select.py --direction yes --output candidates.json  # 或 --direction no
 
 - **scripts/deduplicate.py**
   - **用途**: 根据现有持仓过滤掉重复的交易机会。
@@ -106,7 +106,7 @@ Agent 必须严格按照以下步骤顺序执行，不得跳过或颠倒。
 
 - **scripts/exec_pipeline.py**
   - **用途**: 串联策略筛选、去重和风险计算，生成最终的交易计划 trades_plan.json。
-  - **调用**: python3 scripts/exec_pipeline.py --direction random  # 可选：yes / no
+  - **调用**: python3 scripts/exec_pipeline.py --direction yes  # 或 --direction no
 
 - **scripts/trade.py**
   - **用途**: 执行单笔交易。

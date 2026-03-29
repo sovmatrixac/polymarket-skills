@@ -43,7 +43,8 @@ Polymarket 的所有持仓，并根据 `asset` / `condition_id` 字段过滤掉
 在去重时，本脚本会按照如下顺序推断候选的 token_id：
 
 1. 若条目已有 `token_id` 字段，则直接使用；
-2. 否则优先使用 `token_no`，退化为使用 `token_yes`。
+2. 否则若条目包含 `direction`（YES/NO），则分别优先使用 `token_yes` / `token_no`；
+3. 否则优先使用 `token_no`，退化为使用 `token_yes`。
 
 输出 JSON 结构：
 
@@ -188,10 +189,17 @@ def deduplicate_by_positions(
 
     for item in candidates:
         # 推断候选 token_id
+        direction = str(item.get("direction") or "").strip().lower()
+        if direction == "yes":
+            token_fallback = item.get("token_yes")
+        elif direction == "no":
+            token_fallback = item.get("token_no")
+        else:
+            token_fallback = item.get("token_no") or item.get("token_yes")
+
         token_id = _normalize_hex(
             item.get("token_id")
-            or item.get("token_no")
-            or item.get("token_yes")
+            or token_fallback
             or item.get("token")
         )
         condition_id = _normalize_hex(item.get("condition_id"))
